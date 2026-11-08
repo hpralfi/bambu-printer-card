@@ -2,7 +2,7 @@
  *  Needs the ha-bambulab integration (https://github.com/greghesp/ha-bambulab).
  *  type: custom:bambu-printer-card
  *    device:  <device_id of the printer>      (pick it in the card editor)
- *    view:    printer | details               (picture  /  controls, filament list, value tiles)
+ *    view:    printer | details | hotends     (picture  /  controls, filament list, value tiles  /  hotend rack)
  *    plug:    switch.xyz                      (optional smart plug of the printer)
  *    power:   sensor.xyz                      (optional power sensor)
  *    humidity_inverted: false                 (true if your AMS humidity index 5 means dry)
@@ -10,7 +10,7 @@
  *  MIT License
  */
 (() => {
-  const VERSION = '1.2.0-h2c';
+  const VERSION = '1.3.0-h2c';
   const TAG = 'bambu-printer-card';
   const DOMAIN = 'bambu_lab';
 
@@ -29,9 +29,9 @@
       firmware: 'Firmware', update: 'Update da', current: 'aktuell', runtime: 'Laufzeit', connection: 'Verbindung', status: 'Status', online: 'online', offlineS: 'offline', wifi: 'WLAN', mode: 'Modus',
       power: 'Strom', powerW: 'Leistung', tomorrow: 'morgen', min: 'min', h: 'h', noDevice: 'Bitte im Karten-Editor einen Bambu-Lab-Drucker auswählen.', notFound: 'Für dieses Gerät wurden keine Entitäten der Bambu-Lab-Integration gefunden.',
       nozzleL: 'Düse L', nozzleR: 'Düse R', left: 'links', right: 'rechts', drying: 'Trocknung', dryingLeft: 'trocknet, Rest', bedLight: 'Bettlicht',
-      hotends: 'Hotends', hotend: 'Hotend', mounted: 'eingesetzt', docked: 'im Rack', hEmpty: 'leer', usedTime: 'Laufzeit', hState: 'Zustand',
+      hotends: 'Hotends', noRack: 'Dieser Drucker hat kein Hotend-Rack.', hotend: 'Hotend', mounted: 'eingesetzt', docked: 'im Rack', hEmpty: 'leer', usedTime: 'Laufzeit', hState: 'Zustand',
       nozzleTypes: { hardened_steel: 'Gehärteter Stahl', stainless_steel: 'Edelstahl', tungsten_carbide: 'Wolframcarbid', brass: 'Messing' },
-      ed: { device: 'Drucker', view: 'Ansicht', vPrinter: 'Bild vom Drucker', vDetails: 'Steuerung, Filament und Werte', plug: 'Steckdose (optional)', power: 'Leistungs-Sensor (optional)', hum: 'Feuchte-Index umkehren (5 = trocken)', lang: 'Sprache', auto: 'Automatisch' },
+      ed: { device: 'Drucker', view: 'Ansicht', vPrinter: 'Bild vom Drucker', vDetails: 'Steuerung, Filament und Werte', vHotends: 'Hotend-Rack', plug: 'Steckdose (optional)', power: 'Leistungs-Sensor (optional)', hum: 'Feuchte-Index umkehren (5 = trocken)', lang: 'Sprache', auto: 'Automatisch' },
     },
     en: {
       progress: 'Progress', remaining: 'Remaining', done: 'Done', layer: 'Layer', nozzle: 'Nozzle', bed: 'Bed', bedLong: 'Bed', chamber: 'Chamber', chamberLong: 'Chamber',
@@ -47,9 +47,9 @@
       firmware: 'Firmware', update: 'update available', current: 'up to date', runtime: 'Run time', connection: 'Connection', status: 'Status', online: 'online', offlineS: 'offline', wifi: 'Wi-Fi', mode: 'Mode',
       power: 'Power', powerW: 'Power', tomorrow: 'tomorrow', min: 'min', h: 'h', noDevice: 'Please pick a Bambu Lab printer in the card editor.', notFound: 'No Bambu Lab entities were found for this device.',
       nozzleL: 'Nozzle L', nozzleR: 'Nozzle R', left: 'left', right: 'right', drying: 'Drying', dryingLeft: 'drying, left', bedLight: 'Bed light',
-      hotends: 'Hotends', hotend: 'Hotend', mounted: 'mounted', docked: 'in rack', hEmpty: 'empty', usedTime: 'Used', hState: 'State',
+      hotends: 'Hotends', noRack: 'This printer has no hotend rack.', hotend: 'Hotend', mounted: 'mounted', docked: 'in rack', hEmpty: 'empty', usedTime: 'Used', hState: 'State',
       nozzleTypes: { hardened_steel: 'Hardened steel', stainless_steel: 'Stainless steel', tungsten_carbide: 'Tungsten carbide', brass: 'Brass' },
-      ed: { device: 'Printer', view: 'View', vPrinter: 'Printer picture', vDetails: 'Controls, filament and values', plug: 'Smart plug (optional)', power: 'Power sensor (optional)', hum: 'Invert humidity index (5 = dry)', lang: 'Language', auto: 'Automatic' },
+      ed: { device: 'Printer', view: 'View', vPrinter: 'Printer picture', vDetails: 'Controls, filament and values', vHotends: 'Hotend rack', plug: 'Smart plug (optional)', power: 'Power sensor (optional)', hum: 'Invert humidity index (5 = dry)', lang: 'Language', auto: 'Automatic' },
     },
   };
 
@@ -174,7 +174,7 @@
       if (!this.shadowRoot) { this.attachShadow({ mode: 'open' }); this.shadowRoot.addEventListener('click', (ev) => this._click(ev)); }
       if (this._h) this._render();
     }
-    getCardSize() { return this._c && this._c.view === 'details' ? 9 : 11; }
+    getCardSize() { return this._c && this._c.view === 'hotends' ? 4 : this._c && this._c.view === 'details' ? 9 : 11; }
     getGridOptions() { return { columns: 'full', rows: 'auto' }; }
     set hass(h) {
       this._h = h;
@@ -316,6 +316,7 @@
       try {
         if (!this._c.device) html = `<div class="pad klein">${esc(this._t.noDevice)}</div>`;
         else if (!this._r || !this._e('sensor:print_status')) html = `<div class="pad klein">${esc(this._t.notFound)}</div>`;
+        else if (this._c.view === 'hotends') html = this._r.rack ? `<div class="pad">${this._rackHtml(true)}</div>` : `<div class="pad klein">${esc(this._t.noRack)}</div>`;
         else html = this._c.view === 'details' ? this._details() : this._printer();
       } catch (x) { html = `<div class="pad">Bambu Printer Card: ${esc(x.message)}</div>`; }
       this.shadowRoot.innerHTML = `<style>${CSS}</style><div class="karte">${html}</div>`;
@@ -500,6 +501,27 @@
       const svg = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">${defs}${pipes}${amsSvg}<g transform="translate(${dx} ${Y})">${pr}</g>${off}</svg>`;
       return head + `<div style="padding:0 10px 12px">${svg}</div>`;
     }
+    // Hotend-Rack als Kacheln (Ansicht details und eigene Ansicht hotends)
+    _rackHtml(noTitle) {
+      const t = this._t; let h = '';
+      if (this._r.rack) {
+        if (!noTitle) h += `<div class="ueber"><ha-icon icon="mdi:printer-3d-nozzle"></ha-icon>${t.hotends}</div>`;
+        h += `<div class="kacheln">`;
+        this._r.rack.hotends.forEach((x) => {
+          const he = this._hotend(x);
+          h += this._tile(t.hotend + ' ' + esc(he.nr || ''), he.mounted ? 'mdi:arrow-up-bold-circle' : 'mdi:printer-3d-nozzle-outline', he.c || '#4A5D70', [
+            [t.hState, esc(he.stTxt), he.mounted ? '#4FA3F7' : ''],
+            he.dia ? [t.nozzle, esc(he.dia) + ' mm'] : null,
+            he.typ ? ['', esc(he.typ)] : null,
+            he.fil ? [t.filament, esc(he.fil)] : null,
+            isNaN(he.used) ? null : [t.usedTime, this._fx(he.used, 1) + ' h'],
+            he.ok ? null : ['⚠', esc(he.status), '#FF9EA1'],
+          ], he.e);
+        });
+        h += `</div>`;
+      }
+      return h;
+    }
     _tile(title, icon, color, rows, e) {
       return `<div class="kachel"${e ? ` data-act="info" data-e="${esc(e)}"` : ''}><div class="streifen" style="background:${color}"></div><div class="inhalt"><div class="kt"><ha-icon icon="${icon}"></ha-icon>${esc(title)}</div>${rows.filter(Boolean).map((z) => `<div class="kz"><span>${esc(z[0])}</span><span${z[2] ? ` style="color:${z[2]}"` : ''}>${z[1]}</span></div>`).join('')}</div></div>`;
     }
@@ -556,22 +578,7 @@
         if (this._r.ext.length) h += `<div class="kachel"><div class="inhalt"><div style="font-size:15px;font-weight:700">${t.ext}</div>${this._r.ext.map((e, i) => row(this._tray(e), t.holder + (this._r.ext.length > 1 ? ' ' + (i + 1) : ''))).join('')}</div></div>`;
         h += `</div>`;
       }
-      // Hotend-Rack
-      if (this._r.rack) {
-        h += `<div class="ueber"><ha-icon icon="mdi:printer-3d-nozzle"></ha-icon>${t.hotends}</div><div class="kacheln">`;
-        this._r.rack.hotends.forEach((x) => {
-          const he = this._hotend(x);
-          h += this._tile(t.hotend + ' ' + esc(he.nr || ''), he.mounted ? 'mdi:arrow-up-bold-circle' : 'mdi:printer-3d-nozzle-outline', he.c || '#4A5D70', [
-            [t.hState, esc(he.stTxt), he.mounted ? '#4FA3F7' : ''],
-            he.dia ? [t.nozzle, esc(he.dia) + ' mm'] : null,
-            he.typ ? ['', esc(he.typ)] : null,
-            he.fil ? [t.filament, esc(he.fil)] : null,
-            isNaN(he.used) ? null : [t.usedTime, this._fx(he.used, 1) + ' h'],
-            he.ok ? null : ['⚠', esc(he.status), '#FF9EA1'],
-          ], he.e);
-        });
-        h += `</div>`;
-      }
+      h += this._rackHtml();
       // tiles
       const noz = this._nozzles();
       const tB = this._n(E('sensor:bed_temp')), zB = this._n(E('sensor:target_bed_temp'));
@@ -624,7 +631,7 @@
       this._f.data = this._c;
       this._f.schema = [
         { name: 'device', required: true, selector: { device: { integration: DOMAIN } } },
-        { name: 'view', selector: { select: { mode: 'dropdown', options: [{ value: 'printer', label: t.vPrinter }, { value: 'details', label: t.vDetails }] } } },
+        { name: 'view', selector: { select: { mode: 'dropdown', options: [{ value: 'printer', label: t.vPrinter }, { value: 'details', label: t.vDetails }, { value: 'hotends', label: t.vHotends }] } } },
         { name: 'plug', selector: { entity: { domain: ['switch', 'light', 'input_boolean'] } } },
         { name: 'power', selector: { entity: { domain: 'sensor', device_class: 'power' } } },
         { name: 'humidity_inverted', selector: { boolean: {} } },
