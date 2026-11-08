@@ -10,7 +10,7 @@
  *  MIT License
  */
 (() => {
-  const VERSION = '1.0.0';
+  const VERSION = '1.1.0-h2c';
   const TAG = 'bambu-printer-card';
   const DOMAIN = 'bambu_lab';
 
@@ -28,6 +28,7 @@
       job: 'Druckauftrag', speed: 'Tempo', start: 'Start', source: 'Quelle', state: 'Zustand', hms: 'HMS-Fehler', none: 'keine', yes: 'ja', no: 'nein', printError: 'Druckfehler',
       firmware: 'Firmware', update: 'Update da', current: 'aktuell', runtime: 'Laufzeit', connection: 'Verbindung', status: 'Status', online: 'online', offlineS: 'offline', wifi: 'WLAN', mode: 'Modus',
       power: 'Strom', powerW: 'Leistung', tomorrow: 'morgen', min: 'min', h: 'h', noDevice: 'Bitte im Karten-Editor einen Bambu-Lab-Drucker auswählen.', notFound: 'Für dieses Gerät wurden keine Entitäten der Bambu-Lab-Integration gefunden.',
+      nozzleL: 'Düse L', nozzleR: 'Düse R', left: 'links', right: 'rechts', drying: 'Trocknung', dryingLeft: 'trocknet, Rest', bedLight: 'Bettlicht',
       ed: { device: 'Drucker', view: 'Ansicht', vPrinter: 'Bild vom Drucker', vDetails: 'Steuerung, Filament und Werte', plug: 'Steckdose (optional)', power: 'Leistungs-Sensor (optional)', hum: 'Feuchte-Index umkehren (5 = trocken)', lang: 'Sprache', auto: 'Automatisch' },
     },
     en: {
@@ -43,6 +44,7 @@
       job: 'Print job', speed: 'Speed', start: 'Start', source: 'Source', state: 'Health', hms: 'HMS errors', none: 'none', yes: 'yes', no: 'no', printError: 'Print error',
       firmware: 'Firmware', update: 'update available', current: 'up to date', runtime: 'Run time', connection: 'Connection', status: 'Status', online: 'online', offlineS: 'offline', wifi: 'Wi-Fi', mode: 'Mode',
       power: 'Power', powerW: 'Power', tomorrow: 'tomorrow', min: 'min', h: 'h', noDevice: 'Please pick a Bambu Lab printer in the card editor.', notFound: 'No Bambu Lab entities were found for this device.',
+      nozzleL: 'Nozzle L', nozzleR: 'Nozzle R', left: 'left', right: 'right', drying: 'Drying', dryingLeft: 'drying, left', bedLight: 'Bed light',
       ed: { device: 'Printer', view: 'View', vPrinter: 'Printer picture', vDetails: 'Controls, filament and values', plug: 'Smart plug (optional)', power: 'Power sensor (optional)', hum: 'Invert humidity index (5 = dry)', lang: 'Language', auto: 'Automatic' },
     },
   };
@@ -114,18 +116,32 @@
     const ents = Object.values(hass.entities || {});
     const devs = hass.devices || {};
     const map = (devId) => { const m = {}; ents.forEach((e) => { if (e.device_id === devId && e.translation_key) m[e.entity_id.split('.')[0] + ':' + e.translation_key] = e.entity_id; }); return m; };
+    // Alle Entities eines Geraets mit gleichem Schluessel (neuere ha-bambulab: alle Faecher heissen 'tray')
+    const all = (devId, key) => ents.filter((e) => e.device_id === devId && e.entity_id.split('.')[0] + ':' + e.translation_key === key).map((e) => e.entity_id);
+    const num = (s) => { const x = Number(s); return isNaN(x) ? 99 : x; };
+    const slotNr = (eid) => { const s = hass.states[eid]; const a = s ? s.attributes.slot : undefined; return a !== undefined ? num(a) : num((eid.match(/(\d+)$/) || [])[1]); };
     const p = map(deviceId);
     const children = Object.values(devs).filter((d) => d.via_device_id === deviceId);
     const nat = (d) => String(d.name_by_user || d.name || '');
-    const ams = children.filter((d) => /AMS/i.test(d.model || '') || /_AMS_\d/i.test(d.name || ''))
+    let nFull = 0, nHt = 0;
+    const amsDevs = children.filter((d) => /AMS/i.test(d.model || '') || /_AMS_\d/i.test(d.name || ''))
+      .sort((a, b) => nat(a).localeCompare(nat(b), undefined, { numeric: true }));
+    const nHtAll = amsDevs.filter((d) => /\bHT\b/i.test(d.model || '')).length;
+    const ams = amsDevs.map((d) => {
+      const m = map(d.id);
+      // Alte Integration: tray_1..tray_4; neue: 'tray' mit Attribut 'slot'
+      let trays = [1, 2, 3, 4].map((n) => m['sensor:tray_' + n]).filter(Boolean);
+      if (!trays.length) trays = all(d.id, 'sensor:tray').sort((a, b) => slotNr(a) - slotNr(b));
+      const ht = /\bHT\b/i.test(d.model || '');
+      // Anzeigename aus dem Modell: AMS HT bekommt keine fortlaufende Nummer der AMS-Reihe
+      const label = ht ? 'AMS HT' + (nHtAll > 1 ? ' ' + (++nHt) : '') : 'AMS ' + (++nFull);
+      return { label, ht, temp: m['sensor:ams_temp'], humIdx: m['sensor:humidity_index'], hum: m['sensor:humidity'], drying: m['binary_sensor:drying'], dryLeft: m['sensor:remaining_drying_time'], trays };
+    }).filter((a) => a.trays.length);
+    ams.forEach((a, i) => { a.nr = i + 1; });
+    // Bis zu zwei externe Spulen (H2D/H2C: ExternalSpool, ExternalSpool2)
+    const ext = children.filter((d) => /external/i.test(d.model || '') || /externalspool/i.test(d.name || ''))
       .sort((a, b) => nat(a).localeCompare(nat(b), undefined, { numeric: true }))
-      .map((d, i) => {
-        const m = map(d.id);
-        const trays = [1, 2, 3, 4].map((n) => m['sensor:tray_' + n]).filter(Boolean);
-        return { nr: i + 1, name: (String(nat(d)).match(/AMS[ _-]?(\w+)?$/i) || [])[0], temp: m['sensor:ams_temp'], humIdx: m['sensor:humidity_index'], hum: m['sensor:humidity'], trays };
-      }).filter((a) => a.trays.length);
-    const extDev = children.find((d) => /external/i.test(d.model || '') || /externalspool/i.test(d.name || ''));
-    const ext = extDev ? map(extDev.id)['sensor:external_spool'] : undefined;
+      .map((d) => map(d.id)['sensor:external_spool']).filter(Boolean);
     const dev = devs[deviceId] || {};
     return { p, ams, ext, model: dev.model || '', name: dev.name_by_user || dev.name || '' };
   }
@@ -162,8 +178,8 @@
     _ids() {
       const r = this._r; if (!r) return [];
       const l = Object.values(r.p);
-      r.ams.forEach((a) => { [a.temp, a.humIdx, a.hum].forEach((x) => x && l.push(x)); l.push(...a.trays); });
-      if (r.ext) l.push(r.ext);
+      r.ams.forEach((a) => { [a.temp, a.humIdx, a.hum, a.drying, a.dryLeft].forEach((x) => x && l.push(x)); l.push(...a.trays); });
+      l.push(...r.ext);
       if (this._c.plug) l.push(this._c.plug);
       if (this._c.power) l.push(this._c.power);
       return l;
@@ -175,11 +191,13 @@
     _tr(e) { const s = this._S(e); if (!s) return '--'; try { if (this._h.formatEntityState) return this._h.formatEntityState(s); } catch (x) { /* fallback */ } return String(s.state).replace(/_/g, ' '); }
     _fx(x, d) { return (isNaN(x) || x === null) ? '--' : Number(x).toLocaleString(this._t === L.de ? 'de-DE' : 'en-US', { minimumFractionDigits: d || 0, maximumFractionDigits: d || 0 }); }
     _int(x) { return isNaN(x) ? '--' : String(Math.round(x)); }
-    _dur(e) {
+    // short: kompakte Form "3:18 h" fuer enge Stellen in der Zeichnung
+    _dur(e, short) {
       let m = this._n(e); if (isNaN(m)) return '--';
       const u = ((this._S(e) || {}).attributes || {}).unit_of_measurement;
       if (u === 'h') m *= 60; else if (u === 's') m /= 60;
       m = Math.max(0, Math.round(m));
+      if (short) return m >= 60 ? Math.floor(m / 60) + ':' + String(m % 60).padStart(2, '0') + ' h' : m + ' min';
       return m >= 60 ? Math.floor(m / 60) + ' h ' + String(m % 60).padStart(2, '0') + ' min' : m + ' min';
     }
     _clock(e) {
@@ -195,10 +213,12 @@
       return days === 0 ? hm : days === 1 ? this._t.tomorrow + ' ' + hm : String(d.getDate()).padStart(2, '0') + '.' + String(d.getMonth() + 1).padStart(2, '0') + '. ' + hm;
     }
     _tray(e) {
-      const s = this._S(e); const at = s ? s.attributes : {};
+      const s = this._S(e); let at = s ? s.attributes : {};
       let c = String(at.color || '');
       const alpha = c.length === 9 ? parseInt(c.slice(7), 16) : 255;
-      const unknown = !s || ['unknown', 'unavailable', ''].includes(String(s.state)) || (!at.type && alpha === 0);
+      // '?' meldet die Integration fuer unbelegte externe Spulen
+      if (at.type === '?') at = Object.assign({}, at, { type: '' });
+      const unknown = !s || ['unknown', 'unavailable', '', '?'].includes(String(s.state)) || (!at.type && alpha === 0);
       const empty = !!at.empty || unknown;
       c = c.length >= 7 ? c.slice(0, 7) : '#888888';
       const rem = Number(at.remain);
@@ -210,6 +230,22 @@
       if (a.hum && !isNaN(this._n(a.hum))) { const v = this._n(a.hum); return { txt: this._int(v) + '%', col: v >= 50 ? '#E5484D' : v >= 40 ? '#F7AB3E' : v >= 30 ? '#F7D04A' : '#4CC38A', e: a.hum }; }
       const i = this._n(a.humIdx); return { txt: isNaN(i) ? '--' : this._int(i), col: this._humColor(i), e: a.humIdx };
     }
+    // Trocknung laeuft? Liefert Restzeit-Text oder null
+    _amsDry(a) {
+      const on = a.drying ? this._st(a.drying) === 'on' : this._n(a.dryLeft) > 0;
+      return on ? { txt: a.dryLeft ? this._dur(a.dryLeft) : '', short: a.dryLeft ? this._dur(a.dryLeft, true) : '', e: a.dryLeft || a.drying } : null;
+    }
+    // Zwei Duesen (H2D/H2C) oder eine
+    _nozzles() {
+      const E = (k) => this._e(k);
+      const one = (cur, tgt, num, dia, typ, label) => ({ label, t: this._n(E(cur)), z: this._n(E(tgt)), e: E(num) || E(tgt) || E(cur), dia: E(dia), typ: E(typ) });
+      if (E('sensor:left_nozzle_temp') && E('sensor:right_nozzle_temp')) {
+        return [one('sensor:left_nozzle_temp', 'sensor:left_target_nozzle_temp', 'number:left_target_nozzle_temperature', 'sensor:left_nozzle_diameter', 'sensor:left_nozzle_type', this._t.nozzleL),
+          one('sensor:right_nozzle_temp', 'sensor:right_target_nozzle_temp', 'number:right_target_nozzle_temperature', 'sensor:right_nozzle_diameter', 'sensor:right_nozzle_type', this._t.nozzleR)];
+      }
+      return [one('sensor:nozzle_temp', 'sensor:target_nozzle_temp', 'number:target_nozzle_temperature', 'sensor:nozzle_diameter', 'sensor:nozzle_type', this._t.nozzle)];
+    }
+    _tempTxt(t, z) { return this._int(t) + (isNaN(z) || z <= 0 ? ' °C' : ' / ' + this._int(z) + ' °C'); }
     _status() {
       const e = this._e('sensor:print_status');
       const ds = this._st(e);
@@ -284,7 +320,7 @@
       const stage = this._st(E('sensor:stage'));
       const showStage = S.active && !['idle', 'printing', 'unknown', 'unavailable', 'offline'].includes(stage);
       const lay = this._n(E('sensor:current_layer')), layT = this._n(E('sensor:total_layers'));
-      const tD = this._n(E('sensor:nozzle_temp')), zD = this._n(E('sensor:target_nozzle_temp'));
+      const noz = this._nozzles();
       const tB = this._n(E('sensor:bed_temp')), zB = this._n(E('sensor:target_bed_temp'));
       const tK = this._n(E('sensor:chamber_temp'));
       const fan = this._n(E('sensor:cooling_fan_speed'));
@@ -305,22 +341,36 @@
           + `<div class="wert" data-act="info" data-e="${esc(E('sensor:current_layer'))}"><span>${t.layer}</span><b>${this._int(lay)} / ${this._int(layT)}</b></div></div>`;
       }
       head += '</div>';
-      // AMS rows (two per row)
+      // AMS-Reihen: hoechstens zwei normale AMS je Reihe, schmale AMS HT (1 Fach)
+      // haengen sich an die Reihe an. Wird eine Reihe breiter als 400, waechst
+      // die viewBox mit und der Drucker wird in der Mitte gezeichnet.
       const ams = this._r.ams;
-      const rows = Math.ceil(ams.length / 2);
-      const top = rows * 124;
+      const rowsA = [];
+      ams.filter((a) => !a.ht).forEach((a, i) => { if (i % 2 === 0) rowsA.push([]); rowsA[rowsA.length - 1].push(a); });
+      ams.filter((a) => a.ht).forEach((a) => { if (!rowsA.length || rowsA[rowsA.length - 1].length >= 4) rowsA.push([]); rowsA[rowsA.length - 1].push(a); });
+      const boxW = (a, row) => a.ht ? 104 : (row.length === 1 ? 220 : 184);
+      const rowW = (row) => row.reduce((s, a) => s + boxW(a, row), 0) + 12 * (row.length - 1);
+      const W = Math.max(400, ...rowsA.map((row) => rowW(row) + 20));
+      const dx = (W - 400) / 2, cxP = W / 2;
+      const top = rowsA.length * 124;
       let amsSvg = '', pipes = '', activeAms = 0, partColor = '';
-      ams.forEach((a, idx) => {
-        const row = Math.floor(idx / 2), inRow = Math.min(2, ams.length - row * 2);
-        const w = inRow === 2 ? 184 : 220, x0 = inRow === 2 ? (idx % 2 === 0 ? 10 : 206) : 90, y0 = 6 + row * 124;
-        const hu = this._amsHum(a), at = this._n(a.temp);
-        let g = `<rect x="${x0}" y="${y0}" width="${w}" height="118" rx="12" fill="url(#amsG)" stroke="#3A434D"/>`
+      rowsA.forEach((row, ri) => {
+        let x = (W - rowW(row)) / 2;
+        row.forEach((a) => { a._x0 = x; a._w = boxW(a, row); a._y0 = 6 + ri * 124; x += a._w + 12; });
+      });
+      ams.forEach((a) => {
+        const w = a._w, x0 = a._x0, y0 = a._y0, narrow = w < 150;
+        const hu = this._amsHum(a), at = this._n(a.temp), dry = this._amsDry(a);
+        const tempTxt = a.temp ? `<text x="${x0 + w - 12}" y="${y0 + (narrow ? 110 : 104)}" font-size="${narrow ? 11 : 12}" font-weight="700" fill="#FFFFFF" text-anchor="end" data-act="info" data-e="${esc(a.temp)}">${this._fx(at, narrow ? 0 : 1)} °C</text>` : '';
+        const dryTxt = dry ? `<text x="${x0 + w - 12}" y="${y0 + (narrow ? 110 : 104)}" font-size="${narrow ? 11 : 12}" font-weight="700" fill="#F7AB3E" text-anchor="end" data-act="info" data-e="${esc(dry.e)}">♨ ${esc(dry.short)}</text>` : '';
+        const hx = narrow ? x0 + 18 : x0 + w / 2 - 6, hy = y0 + (narrow ? 106 : 100);
+        let g = `<rect x="${x0}" y="${y0}" width="${w}" height="118" rx="12" fill="url(#amsG)" stroke="${dry ? '#F7AB3E' : '#3A434D'}"/>`
           + `<rect x="${x0 + 8}" y="${y0 + 9}" width="${w - 16}" height="72" rx="9" fill="#0B1016" stroke="#2B3540"/>`
           + `<rect x="${x0 + 8}" y="${y0 + 9}" width="${w - 16}" height="18" rx="9" fill="#FFFFFF" fill-opacity="0.04"/>`
-          + `<text x="${x0 + 12}" y="${y0 + 104}" font-size="12" font-weight="700" fill="#C9D6E3">AMS ${a.nr}</text>`
-          + (hu.e ? `<g data-act="info" data-e="${esc(hu.e)}"><path d="M0,-7 C3,-3 5.5,-0.5 5.5,2.5 A5.5,5.5 0 0 1 -5.5,2.5 C-5.5,-0.5 -3,-3 0,-7Z" transform="translate(${x0 + w / 2 - 6},${y0 + 100})" fill="${hu.col}"/><text x="${x0 + w / 2 + 3}" y="${y0 + 104}" font-size="12" font-weight="700" fill="${hu.col}">${esc(hu.txt)}</text></g>` : '')
-          + (a.temp ? `<text x="${x0 + w - 12}" y="${y0 + 104}" font-size="12" font-weight="700" fill="#FFFFFF" text-anchor="end" data-act="info" data-e="${esc(a.temp)}">${this._fx(at, 1)} °C</text>` : '');
-        const gap = (w - 16) / Math.max(4, a.trays.length);
+          + `<text x="${x0 + 12}" y="${y0 + (narrow ? 95 : 104)}" font-size="12" font-weight="700" fill="#C9D6E3">${esc(a.label)}</text>`
+          + (hu.e ? `<g data-act="info" data-e="${esc(hu.e)}"><path d="M0,-7 C3,-3 5.5,-0.5 5.5,2.5 A5.5,5.5 0 0 1 -5.5,2.5 C-5.5,-0.5 -3,-3 0,-7Z" transform="translate(${hx},${hy})" fill="${hu.col}"/><text x="${hx + 9}" y="${hy + 4}" font-size="${narrow ? 11 : 12}" font-weight="700" fill="${hu.col}">${esc(hu.txt)}</text></g>` : '')
+          + (dry ? dryTxt : tempTxt);
+        const gap = (w - 16) / Math.max(narrow ? 1 : 4, a.trays.length);
         const off = (w - 16 - gap * a.trays.length) / 2;
         a.trays.forEach((e, i) => {
           const tr = this._tray(e);
@@ -331,23 +381,28 @@
         });
         amsSvg += g;
         const xm = x0 + w / 2, ya = y0 + 118, act = a.nr === activeAms && S.active;
-        pipes += `<path d="M${xm} ${ya} C${xm} ${top + 18} 200 ${top + 10} 200 ${top + 28}" fill="none" stroke="ACTIVE_${a.nr}" stroke-opacity="${act ? 1 : 0.28}" stroke-width="${act ? 3 : 2}"/>`;
+        pipes += `<path d="M${xm} ${ya} C${xm} ${top + 18} ${cxP} ${top + 10} ${cxP} ${top + 28}" fill="none" stroke="ACTIVE_${a.nr}" stroke-opacity="${act ? 1 : 0.28}" stroke-width="${act ? 3 : 2}"/>`;
       });
       const at = this._tray(E('sensor:active_tray'));
-      const ext = this._r.ext ? this._tray(this._r.ext) : null;
+      const exts = this._r.ext.map((e) => this._tray(e));
+      const extAct = exts.find((x) => x.act);
       if (!partColor && !at.empty) partColor = at.c;
-      if (!partColor && ext && ext.act) partColor = ext.c;
+      if (!partColor && extAct) partColor = extAct.c;
       if (!partColor) partColor = '#9AA6B2';
       pipes = pipes.replace(/ACTIVE_(\d+)/g, (m, n) => (Number(n) === activeAms && S.active ? partColor : '#C9D6E3'));
       // printer body (drawn at y = Y + ...)
       const Y = top + 26 - 150; // shift: original drawing starts at 150
       const yB = Math.round(268 + S.prog * 1.6);
-      const dC = mix(tD, 40, 240), bC = mix(tB, 25, 100), kC = mix(tK, 15, 60);
+      const bC = mix(tB, 25, 100), kC = mix(tK, 15, 60);
       const printing = S.ds === 'running';
       const part = (S.active || S.ds === 'finish') && S.prog > 0
         ? `<rect x="172" y="268" width="56" height="${yB - 268}" rx="2" fill="${partColor}"/><rect x="172" y="268" width="56" height="${yB - 268}" rx="2" fill="url(#schichtM)"/><rect x="172" y="268" width="56" height="${yB - 268}" rx="2" fill="url(#teilG)"/>`
         : '';
-      const nozzleTarget = E('number:target_nozzle_temperature') || E('sensor:target_nozzle_temp');
+      // Duesenspitzen: eine mittig, oder zwei nebeneinander (links/rechts)
+      const tips = (noz.length === 2 ? [190, 210] : [200]).map((x, i) => {
+        const n = noz[i], c = mix(n.t, 40, 240), hw = noz.length === 2 ? 5 : 7;
+        return `<path d="M${x - hw} 258 L${x + hw} 258 L${x + hw - 3} 266 L${x - hw + 3} 266 Z" fill="${c}"/>` + (n.t > 150 ? `<circle cx="${x}" cy="267" r="${noz.length === 2 ? 4 : 5}" fill="${c}" opacity="0.55"/>` : '');
+      }).join('');
       const bedTarget = E('number:target_bed_temperature') || E('sensor:target_bed_temp');
       let pr = `<rect x="34" y="150" width="332" height="330" rx="14" fill="url(#rahmenG)" stroke="#3A434D"/>`
         + `<rect x="42" y="154" width="316" height="6" rx="3" fill="#FFFFFF" fill-opacity="0.06"/>`
@@ -367,23 +422,27 @@
         + `<rect x="74" y="${yB}" width="252" height="10" rx="2" fill="#39414A"/><rect x="80" y="${yB - 3}" width="240" height="4" rx="1" fill="#9AA3AB"/><rect x="66" y="${yB + 2}" width="14" height="6" fill="#4A535C"/><rect x="320" y="${yB + 2}" width="14" height="6" fill="#4A535C"/>`
         + `<rect x="54" y="230" width="292" height="8" rx="3" fill="#262B31" stroke="#3E464F"/>`
         + `<g ${printing ? `class="th" style="animation-delay:-${ph}s"` : ''}><rect x="179" y="220" width="42" height="38" rx="6" fill="#DDE3E8" stroke="#9AA6B2"/><rect x="184" y="227" width="32" height="5" rx="2" fill="#2A3036"/><circle cx="210" cy="246" r="5" fill="none" stroke="#7D8893" stroke-width="1.5"/>`
-        + `<path d="M193 258 L207 258 L203 266 L197 266 Z" fill="${dC}"/>` + (tD > 150 ? `<circle cx="200" cy="267" r="5" fill="${dC}" opacity="0.55"/>` : '') + `</g>`
+        + tips + `</g>`
         + `</g>`
         + (enclosed ? `<rect x="48" y="212" width="304" height="252" rx="8" fill="url(#glasG)" stroke="${door ? '#F7AB3E' : '#4A5D70'}" stroke-width="${door ? 2 : 1.2}"/><rect x="194" y="300" width="12" height="70" rx="3" fill="#FFFFFF" fill-opacity="0.05"/>` : `<rect x="48" y="212" width="304" height="252" rx="8" fill="none" stroke="#2B3540"/>`)
-        + this._pill(56, 244, t.nozzle, this._int(tD) + (isNaN(zD) || zD <= 0 ? ' °C' : ' / ' + this._int(zD) + ' °C'), dC, 'start', nozzleTarget)
+        + noz.map((n, i) => this._pill(56, 244 + i * 26, n.label, this._tempTxt(n.t, n.z), mix(n.t, 40, 240), 'start', n.e)).join('')
         + (E('sensor:chamber_temp') ? this._pill(344, 244, t.chamber, this._int(tK) + ' °C', kC, 'end', E('sensor:chamber_temp')) : '')
         + (fan > 0 ? this._pill(344, 270, t.fan, this._int(fan) + ' %', '#4FA3F7', 'end', E('fan:cooling_fan') || E('sensor:cooling_fan_speed')) : '')
-        + this._pill(56, Math.min(yB + 14, 438), t.bed, this._int(tB) + (isNaN(zB) || zB <= 0 ? ' °C' : ' / ' + this._int(zB) + ' °C'), bC, 'start', bedTarget)
+        + this._pill(56, Math.min(Math.max(yB + 14, 244 + noz.length * 26), 438), t.bed, this._int(tB) + (isNaN(zB) || zB <= 0 ? ' °C' : ' / ' + this._int(zB) + ' °C'), bC, 'start', bedTarget)
         + (door ? this._pill(344, 438, t.door, t.open, '#F7AB3E', 'end', E('binary_sensor:door_open')) : '')
         + (E('light:chamber_light') ? `<g data-act="svc" data-dom="light" data-svc="toggle" data-e="${esc(E('light:chamber_light'))}"><circle cx="200" cy="186" r="13" fill="${light ? '#F7D04A' : '#18293B'}" stroke="${light ? '#F7D04A' : '#4A5D70'}"/><path d="M200 178 a5 5 0 0 1 3 9 v2 h-6 v-2 a5 5 0 0 1 3 -9z M197.5 191 h5 v2 h-5z" fill="${light ? '#0F1A26' : '#8AA0B6'}"/></g>` : '')
         + `<rect x="150" y="469" width="100" height="4" rx="2" fill="${S.col}"${printing ? ' class="puls"' : ''}/>`;
-      if (ext && (!ext.empty || ext.type)) {
-        pr += `<g data-act="info" data-e="${esc(ext.e)}"><circle cx="383" cy="296" r="13" fill="${ext.c}"/><circle cx="383" cy="296" r="13" fill="url(#spuleG)"/><circle cx="383" cy="296" r="13" fill="none" stroke="#FFFFFF" stroke-opacity="0.28"/><circle cx="383" cy="296" r="4.5" fill="#1B2026"/>`
-          + (ext.act ? `<circle class="puls" cx="383" cy="296" r="16.5" fill="none" stroke="#FFFFFF" stroke-width="1.5"/>` : '')
-          + `<text x="383" y="324" font-size="9" fill="#8AA0B6" text-anchor="middle">${esc(t.extShort)}</text></g>`;
-      }
+      // Externe Spulen: erste rechts am Drucker (wie bisher), zweite links.
+      // Unbelegte Halter (leer und ohne Typ) werden nicht gezeichnet.
+      exts.forEach((ext, i) => {
+        if (ext.empty && !ext.type) return;
+        const cx = i === 0 ? 383 : 17, lbl = exts.length > 1 ? t.extShort + ' ' + (i + 1) : t.extShort;
+        pr += `<g data-act="info" data-e="${esc(ext.e)}"><circle cx="${cx}" cy="296" r="13" fill="${ext.c}"/><circle cx="${cx}" cy="296" r="13" fill="url(#spuleG)"/><circle cx="${cx}" cy="296" r="13" fill="none" stroke="#FFFFFF" stroke-opacity="0.28"/><circle cx="${cx}" cy="296" r="4.5" fill="#1B2026"/>`
+          + (ext.act ? `<circle class="puls" cx="${cx}" cy="296" r="16.5" fill="none" stroke="#FFFFFF" stroke-width="1.5"/>` : '')
+          + `<text x="${cx}" y="324" font-size="9" fill="#8AA0B6" text-anchor="middle">${esc(lbl)}</text></g>`;
+      });
       const H = 492 + Y;
-      const off = S.online ? '' : `<rect x="0" y="0" width="400" height="${H}" fill="#0F1A26" fill-opacity="0.55"/><text x="200" y="${340 + Y}" font-size="22" font-weight="700" fill="#8AA0B6" text-anchor="middle">${esc(t.offline)}</text>`;
+      const off = S.online ? '' : `<rect x="0" y="0" width="${W}" height="${H}" fill="#0F1A26" fill-opacity="0.55"/><text x="${cxP}" y="${340 + Y}" font-size="22" font-weight="700" fill="#8AA0B6" text-anchor="middle">${esc(t.offline)}</text>`;
       const defs = `<defs>
         <linearGradient id="amsG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#353C44"/><stop offset="1" stop-color="#20252B"/></linearGradient>
         <linearGradient id="rahmenG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2A2F35"/><stop offset="1" stop-color="#16191D"/></linearGradient>
@@ -393,7 +452,7 @@
         <linearGradient id="teilG" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#000000" stop-opacity="0.25"/><stop offset="0.4" stop-color="#FFFFFF" stop-opacity="0.12"/><stop offset="1" stop-color="#000000" stop-opacity="0.35"/></linearGradient>
         <pattern id="schichtM" width="4" height="3" patternUnits="userSpaceOnUse"><rect width="4" height="1" fill="#000000" fill-opacity="0.18"/></pattern>
       </defs>`;
-      const svg = `<svg viewBox="0 0 400 ${H}" xmlns="http://www.w3.org/2000/svg">${defs}${pipes}${amsSvg}<g transform="translate(0 ${Y})">${pr}</g>${off}</svg>`;
+      const svg = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">${defs}${pipes}${amsSvg}<g transform="translate(${dx} ${Y})">${pr}</g>${off}</svg>`;
       return head + `<div style="padding:0 10px 12px">${svg}</div>`;
     }
     _tile(title, icon, color, rows, e) {
@@ -414,6 +473,9 @@
       if (S.active) h += btn(t.stop, 'mdi:stop', 'button', 'press', E('button:stop'), { red: 1, ask: t.qStop, yes: t.aStop });
       const li = this._st(E('light:chamber_light')) === 'on';
       h += btn(t.light, li ? 'mdi:lightbulb-on' : 'mdi:lightbulb-outline', 'light', 'toggle', E('light:chamber_light'), { on: li });
+      // H2D/H2C: zusaetzliches Licht am Heizbett
+      const lb = this._st(E('light:heatbed_light')) === 'on';
+      h += btn(t.bedLight, lb ? 'mdi:lightbulb-on' : 'mdi:lightbulb-outline', 'light', 'toggle', E('light:heatbed_light'), { on: lb });
       const ca = this._st(E('switch:camera')) === 'on';
       h += btn(t.camera, ca ? 'mdi:cctv' : 'mdi:cctv-off', 'switch', 'toggle', E('switch:camera'), { on: ca });
       if (this._c.plug && this._S(this._c.plug)) {
@@ -435,21 +497,22 @@
           + `<div style="min-width:0"><div class="klein">${esc(label)}${tr.act ? ` · <b style="color:#FFFFFF">${t.active}</b>` : ''}</div><div class="sn">${tr.empty ? (tr.unknown ? t.unknownTray : t.emptyLong) : esc(tr.name)}</div><div class="klein">${esc(tr.type)}${temp}</div></div>`
           + `<div class="rest">${tr.empty ? '–' : isNaN(tr.rem) ? '?' : this._int(tr.rem) + ' %'}${tr.empty || isNaN(tr.rem) ? '' : `<div class="mb"><div style="width:${tr.rem}%;background:${rc}"></div></div>`}</div></div>`;
       };
-      if (this._r.ams.length || this._r.ext) {
+      if (this._r.ams.length || this._r.ext.length) {
         h += `<div class="ueber"><ha-icon icon="mdi:tray-full"></ha-icon>${t.filament}</div><div class="gitter">`;
         this._r.ams.forEach((a) => {
-          const hu = this._amsHum(a);
-          h += `<div class="kachel"><div class="inhalt"><div class="zeile"><div style="font-size:15px;font-weight:700">AMS ${a.nr}</div><div class="klein">`
+          const hu = this._amsHum(a), dry = this._amsDry(a);
+          h += `<div class="kachel"><div class="inhalt"><div class="zeile"><div style="font-size:15px;font-weight:700">${esc(a.label)}</div><div class="klein">`
+            + (dry ? `<span data-act="info" data-e="${esc(dry.e)}" style="color:#F7AB3E;font-weight:700">♨ ${t.dryingLeft} ${esc(dry.txt)}</span> · ` : '')
             + (hu.e ? `<span data-act="info" data-e="${esc(hu.e)}" style="color:${hu.col};font-weight:700">💧 ${t.humidity} ${esc(hu.txt)}</span>` : '')
             + (a.temp ? ` · <span data-act="info" data-e="${esc(a.temp)}">${this._fx(this._n(a.temp), 1)} °C</span>` : '') + `</div></div>`;
           a.trays.forEach((e, i) => { h += row(this._tray(e), t.slot + ' ' + (i + 1)); });
           h += `</div></div>`;
         });
-        if (this._r.ext) h += `<div class="kachel"><div class="inhalt"><div style="font-size:15px;font-weight:700">${t.ext}</div>${row(this._tray(this._r.ext), t.holder)}</div></div>`;
+        if (this._r.ext.length) h += `<div class="kachel"><div class="inhalt"><div style="font-size:15px;font-weight:700">${t.ext}</div>${this._r.ext.map((e, i) => row(this._tray(e), t.holder + (this._r.ext.length > 1 ? ' ' + (i + 1) : ''))).join('')}</div></div>`;
         h += `</div>`;
       }
       // tiles
-      const tD = this._n(E('sensor:nozzle_temp')), zD = this._n(E('sensor:target_nozzle_temp'));
+      const noz = this._nozzles();
       const tB = this._n(E('sensor:bed_temp')), zB = this._n(E('sensor:target_bed_temp'));
       const tK = this._n(E('sensor:chamber_temp'));
       const door = this._st(E('binary_sensor:door_open')) === 'on';
@@ -460,7 +523,10 @@
       const hmsN = ((this._S(E('binary_sensor:hms_errors')) || {}).attributes || {}).Count;
       const wl = this._n(E('sensor:wifi_signal'));
       h += `<div class="ueber"><ha-icon icon="mdi:information-outline"></ha-icon>${t.values}</div><div class="kacheln">`;
-      h += this._tile(t.nozzle, 'mdi:printer-3d-nozzle-heat', mix(tD, 40, 240), [[t.actual, this._int(tD) + ' °C'], [t.target, isNaN(zD) || zD <= 0 ? t.off : this._int(zD) + ' °C'], E('sensor:nozzle_diameter') ? [t.nozzle, esc(this._st(E('sensor:nozzle_diameter'))) + ' mm' + (E('sensor:nozzle_type') ? ' · ' + esc(this._tr(E('sensor:nozzle_type'))) : '')] : null], E('number:target_nozzle_temperature') || E('sensor:nozzle_temp'));
+      // Je Duese eine Kachel (H2D/H2C: links und rechts)
+      noz.forEach((n) => {
+        h += this._tile(n.label, 'mdi:printer-3d-nozzle-heat', mix(n.t, 40, 240), [[t.actual, this._int(n.t) + ' °C'], [t.target, isNaN(n.z) || n.z <= 0 ? t.off : this._int(n.z) + ' °C'], n.dia ? [t.nozzle, esc(this._st(n.dia)) + ' mm' + (n.typ ? ' · ' + esc(this._tr(n.typ)) : '')] : null], n.e);
+      });
       h += this._tile(t.bedLong, 'mdi:radiator', mix(tB, 25, 100), [[t.actual, this._int(tB) + ' °C'], [t.target, isNaN(zB) || zB <= 0 ? t.off : this._int(zB) + ' °C']], E('number:target_bed_temperature') || E('sensor:bed_temp'));
       if (E('sensor:chamber_temp') || E('binary_sensor:door_open')) h += this._tile(t.chamberLong, 'mdi:thermometer', mix(tK, 15, 60), [E('sensor:chamber_temp') ? [t.temperature, this._int(tK) + ' °C'] : null, E('binary_sensor:door_open') ? [t.door, door ? t.open : t.closed, door ? '#F7AB3E' : ''] : null, E('light:chamber_light') ? [t.light, this._st(E('light:chamber_light')) === 'on' ? t.on : t.off] : null], E('sensor:chamber_temp'));
       h += this._tile(t.fan, 'mdi:fan', '#4FA3F7', [fanRow(t.partFan, 'sensor:cooling_fan_speed'), fanRow(t.auxFan, 'sensor:aux_fan_speed'), fanRow(t.chamberFan, 'sensor:chamber_fan_speed'), fanRow(t.hotendFan, 'sensor:heatbreak_fan_speed')], E('fan:cooling_fan'));
