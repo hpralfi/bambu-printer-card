@@ -10,7 +10,7 @@
  *  MIT License
  */
 (() => {
-  const VERSION = '1.1.0-h2c';
+  const VERSION = '1.2.0-h2c';
   const TAG = 'bambu-printer-card';
   const DOMAIN = 'bambu_lab';
 
@@ -29,6 +29,8 @@
       firmware: 'Firmware', update: 'Update da', current: 'aktuell', runtime: 'Laufzeit', connection: 'Verbindung', status: 'Status', online: 'online', offlineS: 'offline', wifi: 'WLAN', mode: 'Modus',
       power: 'Strom', powerW: 'Leistung', tomorrow: 'morgen', min: 'min', h: 'h', noDevice: 'Bitte im Karten-Editor einen Bambu-Lab-Drucker auswählen.', notFound: 'Für dieses Gerät wurden keine Entitäten der Bambu-Lab-Integration gefunden.',
       nozzleL: 'Düse L', nozzleR: 'Düse R', left: 'links', right: 'rechts', drying: 'Trocknung', dryingLeft: 'trocknet, Rest', bedLight: 'Bettlicht',
+      hotends: 'Hotends', hotend: 'Hotend', mounted: 'eingesetzt', docked: 'im Rack', hEmpty: 'leer', usedTime: 'Laufzeit', hState: 'Zustand',
+      nozzleTypes: { hardened_steel: 'Gehärteter Stahl', stainless_steel: 'Edelstahl', tungsten_carbide: 'Wolframcarbid', brass: 'Messing' },
       ed: { device: 'Drucker', view: 'Ansicht', vPrinter: 'Bild vom Drucker', vDetails: 'Steuerung, Filament und Werte', plug: 'Steckdose (optional)', power: 'Leistungs-Sensor (optional)', hum: 'Feuchte-Index umkehren (5 = trocken)', lang: 'Sprache', auto: 'Automatisch' },
     },
     en: {
@@ -45,6 +47,8 @@
       firmware: 'Firmware', update: 'update available', current: 'up to date', runtime: 'Run time', connection: 'Connection', status: 'Status', online: 'online', offlineS: 'offline', wifi: 'Wi-Fi', mode: 'Mode',
       power: 'Power', powerW: 'Power', tomorrow: 'tomorrow', min: 'min', h: 'h', noDevice: 'Please pick a Bambu Lab printer in the card editor.', notFound: 'No Bambu Lab entities were found for this device.',
       nozzleL: 'Nozzle L', nozzleR: 'Nozzle R', left: 'left', right: 'right', drying: 'Drying', dryingLeft: 'drying, left', bedLight: 'Bed light',
+      hotends: 'Hotends', hotend: 'Hotend', mounted: 'mounted', docked: 'in rack', hEmpty: 'empty', usedTime: 'Used', hState: 'State',
+      nozzleTypes: { hardened_steel: 'Hardened steel', stainless_steel: 'Stainless steel', tungsten_carbide: 'Tungsten carbide', brass: 'Brass' },
       ed: { device: 'Printer', view: 'View', vPrinter: 'Printer picture', vDetails: 'Controls, filament and values', plug: 'Smart plug (optional)', power: 'Power sensor (optional)', hum: 'Invert humidity index (5 = dry)', lang: 'Language', auto: 'Automatic' },
     },
   };
@@ -142,8 +146,18 @@
     const ext = children.filter((d) => /external/i.test(d.model || '') || /externalspool/i.test(d.name || ''))
       .sort((a, b) => nat(a).localeCompare(nat(b), undefined, { numeric: true }))
       .map((d) => map(d.id)['sensor:external_spool']).filter(Boolean);
+    // Hotend-Rack: Hotends nach Attribut 'slot', Laufzeiten nach der Nummer im entity_id
+    const rackDev = children.find((d) => /hotend ?rack/i.test(d.model || '') || /hotendrack/i.test(d.name || ''));
+    let rack = null;
+    if (rackDev) {
+      const nrOf = (eid) => num((eid.match(/hotend_(\d+)/) || [])[1]);
+      const used = {}; all(rackDev.id, 'sensor:hotend_rack_hotend_used_time').forEach((e) => { used[nrOf(e)] = e; });
+      const hotends = all(rackDev.id, 'sensor:hotend_rack_hotend').sort((a, b) => slotNr(a) - slotNr(b))
+        .map((e) => ({ e, used: used[nrOf(e)] }));
+      if (hotends.length) rack = { hotends };
+    }
     const dev = devs[deviceId] || {};
-    return { p, ams, ext, model: dev.model || '', name: dev.name_by_user || dev.name || '' };
+    return { p, ams, ext, rack, model: dev.model || '', name: dev.name_by_user || dev.name || '' };
   }
 
   class BambuPrinterCard extends HTMLElement {
@@ -180,6 +194,7 @@
       const l = Object.values(r.p);
       r.ams.forEach((a) => { [a.temp, a.humIdx, a.hum, a.drying, a.dryLeft].forEach((x) => x && l.push(x)); l.push(...a.trays); });
       l.push(...r.ext);
+      if (r.rack) r.rack.hotends.forEach((h) => { l.push(h.e); if (h.used) l.push(h.used); });
       if (this._c.plug) l.push(this._c.plug);
       if (this._c.power) l.push(this._c.power);
       return l;
@@ -244,6 +259,19 @@
           one('sensor:right_nozzle_temp', 'sensor:right_target_nozzle_temp', 'number:right_target_nozzle_temperature', 'sensor:right_nozzle_diameter', 'sensor:right_nozzle_type', this._t.nozzleR)];
       }
       return [one('sensor:nozzle_temp', 'sensor:target_nozzle_temp', 'number:target_nozzle_temperature', 'sensor:nozzle_diameter', 'sensor:nozzle_type', this._t.nozzle)];
+    }
+    // Hotend aus dem Rack: Zustand mounted/docked/empty, Duese und Filament aus den Attributen
+    _hotend(h) {
+      const s = this._S(h.e), at = s ? s.attributes : {}, t = this._t;
+      const st = s ? String(s.state) : 'unavailable';
+      let c = String(at.color || ''); const alpha = c.length === 9 ? parseInt(c.slice(7), 16) : 255;
+      c = c.length >= 7 && alpha > 0 ? c.slice(0, 7) : '';
+      const fil = ['unknown', ''].includes(String(at.filament_name || '')) ? '' : String(at.filament_name).replace(/^Bambu /, '');
+      const used = h.used ? this._n(h.used) : NaN;
+      return { e: h.e, nr: at.slot, st, mounted: st === 'mounted', empty: st === 'empty' || st === 'unavailable', c, fil,
+        typ: (t.nozzleTypes && t.nozzleTypes[at.nozzle_type]) || String(at.nozzle_type || '').replace(/_/g, ' '),
+        dia: at.nozzle_diameter, used, usedE: h.used, ok: !at.status || at.status === 'normal', status: at.status,
+        stTxt: st === 'mounted' ? t.mounted : st === 'docked' ? t.docked : st === 'empty' ? t.hEmpty : st };
     }
     _tempTxt(t, z) { return this._int(t) + (isNaN(z) || z <= 0 ? ' °C' : ' / ' + this._int(z) + ' °C'); }
     _status() {
@@ -441,7 +469,24 @@
           + (ext.act ? `<circle class="puls" cx="${cx}" cy="296" r="16.5" fill="none" stroke="#FFFFFF" stroke-width="1.5"/>` : '')
           + `<text x="${cx}" y="324" font-size="9" fill="#8AA0B6" text-anchor="middle">${esc(lbl)}</text></g>`;
       });
-      const H = 492 + Y;
+      // Hotend-Rack unter dem Drucker: Farbe = Filament des Hotends, das
+      // eingesetzte erscheint als leerer gestrichelter Platz (es steckt im Druckkopf)
+      let rackH = 0;
+      if (this._r.rack) {
+        const hs = this._r.rack.hotends.map((h) => this._hotend(h));
+        rackH = 40;
+        pr += `<text x="48" y="506" font-size="10" font-weight="700" fill="#8AA0B6">${esc(t.hotends)}</text>`;
+        hs.forEach((h, i) => {
+          const cx = Math.round(200 + (i - (hs.length - 1) / 2) * 32), cy = 502;
+          pr += `<g data-act="info" data-e="${esc(h.e)}">`
+            + (h.mounted || h.empty
+              ? `<circle cx="${cx}" cy="${cy}" r="9" fill="none" stroke="${h.mounted ? '#4FA3F7' : '#4A5D70'}" stroke-width="1.5" stroke-dasharray="3 2"/>`
+              : `<circle cx="${cx}" cy="${cy}" r="9" fill="${h.c || '#3A434D'}"/><circle cx="${cx}" cy="${cy}" r="9" fill="url(#spuleG)"/><circle cx="${cx}" cy="${cy}" r="9" fill="none" stroke="${h.ok ? '#FFFFFF' : '#E5484D'}" stroke-opacity="${h.ok ? 0.3 : 1}" stroke-width="${h.ok ? 1 : 2}"/>`)
+            + (h.mounted ? `<path d="M${cx - 3} ${cy + 2} L${cx} ${cy - 3} L${cx + 3} ${cy + 2}" fill="none" stroke="#4FA3F7" stroke-width="1.5"/>` : '')
+            + `<text x="${cx}" y="${cy + 21}" font-size="9" fill="${h.mounted ? '#FFFFFF' : '#8AA0B6'}" font-weight="${h.mounted ? 700 : 400}" text-anchor="middle">${esc(h.nr || i + 1)}${h.dia ? ' · ' + esc(h.dia) : ''}</text></g>`;
+        });
+      }
+      const H = 492 + rackH + Y;
       const off = S.online ? '' : `<rect x="0" y="0" width="${W}" height="${H}" fill="#0F1A26" fill-opacity="0.55"/><text x="${cxP}" y="${340 + Y}" font-size="22" font-weight="700" fill="#8AA0B6" text-anchor="middle">${esc(t.offline)}</text>`;
       const defs = `<defs>
         <linearGradient id="amsG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#353C44"/><stop offset="1" stop-color="#20252B"/></linearGradient>
@@ -509,6 +554,22 @@
           h += `</div></div>`;
         });
         if (this._r.ext.length) h += `<div class="kachel"><div class="inhalt"><div style="font-size:15px;font-weight:700">${t.ext}</div>${this._r.ext.map((e, i) => row(this._tray(e), t.holder + (this._r.ext.length > 1 ? ' ' + (i + 1) : ''))).join('')}</div></div>`;
+        h += `</div>`;
+      }
+      // Hotend-Rack
+      if (this._r.rack) {
+        h += `<div class="ueber"><ha-icon icon="mdi:printer-3d-nozzle"></ha-icon>${t.hotends}</div><div class="kacheln">`;
+        this._r.rack.hotends.forEach((x) => {
+          const he = this._hotend(x);
+          h += this._tile(t.hotend + ' ' + esc(he.nr || ''), he.mounted ? 'mdi:arrow-up-bold-circle' : 'mdi:printer-3d-nozzle-outline', he.c || '#4A5D70', [
+            [t.hState, esc(he.stTxt), he.mounted ? '#4FA3F7' : ''],
+            he.dia ? [t.nozzle, esc(he.dia) + ' mm'] : null,
+            he.typ ? ['', esc(he.typ)] : null,
+            he.fil ? [t.filament, esc(he.fil)] : null,
+            isNaN(he.used) ? null : [t.usedTime, this._fx(he.used, 1) + ' h'],
+            he.ok ? null : ['⚠', esc(he.status), '#FF9EA1'],
+          ], he.e);
+        });
         h += `</div>`;
       }
       // tiles

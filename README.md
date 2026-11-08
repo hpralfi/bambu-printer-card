@@ -13,7 +13,7 @@ A Home Assistant dashboard card that draws your **Bambu Lab printer together wit
 - Language independent: the card finds the entities through the **device** and their internal keys – renamed entities and any HA language work
 - German and English texts, visual card editor
 
-## Changes in this fork (1.1.0-h2c)
+## Changes in this fork (1.2.0-h2c)
 
 Fork of [ossilampe/bambu-printer-card](https://github.com/ossilampe/bambu-printer-card), adapted for the **H2C / H2D** and current ha-bambulab versions:
 
@@ -23,6 +23,7 @@ Fork of [ossilampe/bambu-printer-card](https://github.com/ossilampe/bambu-printe
 - **Two external spools** (Ext. 1 right, Ext. 2 left of the printer); unused holders are hidden
 - **AMS drying** with remaining time, in the picture and the filament list
 - Heatbed light button in the `details` view
+- **Hotend rack** (H2C): row of hotends below the printer (filament colour, nozzle size, mounted one marked) and one tile per hotend in `details` (state, nozzle, filament, used time)
 
 ## Requirements
 
@@ -38,7 +39,7 @@ Fork of [ossilampe/bambu-printer-card](https://github.com/ossilampe/bambu-printe
 
 **Manual**
 1. Copy `bambu-printer-card.js` to `/config/www/`.
-2. Settings → Dashboards → ⋮ → Resources → add `/local/bambu-printer-card.js?v=1.1.0-h2c` as *JavaScript module*.
+2. Settings → Dashboards → ⋮ → Resources → add `/local/bambu-printer-card.js?v=1.2.0-h2c` as *JavaScript module*.
 
 ## Configuration
 
